@@ -1,0 +1,750 @@
+Estratégia resumida para operar com MetaTrader5 e ProfitChart:
+
+    Monitorar o dólar: se estiver em alta, vender mini-índice; se em baixa, comprar mini-índice.
+    Utilizar análise técnica com indicadores, incluindo KVO, RSI, MACD, e Bollinger Bands.
+    Verificar padrões de Elliot Waves e retrações de Fibonacci para identificar possíveis pontos de entrada e saída.
+    Acompanhar notícias econômicas (br.investing.com/economic-calendar) e considerar análise cíclica e teoria de Dow para confirmar tendências.
+
+/////////Estrategia para operar em conjunto com Metatrader5 e ProfitChart(Nelogica, Clear , Toro)
+
+Dicas::  Dollar para Cima .. operar quando o Mini-Indice estiver para baixo -- Vendido
+         Dollar para Baixo .. Operar quando o Mini-Indice estiver para cima -- Vendido
+
+--- Site para acompanhar as noticias -- https://br.investing.com/economic-calendar/
+--- Estudar analise tecnica....
+
+import MetaTrader5 as mt5
+
+import numpy as np
+
+import pandas as pd
+
+from datetime import datetime, timedelta
+
+import asyncio
+
+import nest_asyncio
+
+from xgboost import XGBClassifier
+
+from sklearn.model_selection import train_test_split
+
+from sklearn.metrics import accuracy_score
+
+from sklearn.ensemble import StackingClassifier
+
+from sklearn.ensemble import RandomForestClassifier
+
+from sklearn.svm import SVC
+
+from sklearn.linear_model import LogisticRegression
+
+from sklearn.impute import SimpleImputer
+
+
+
+# Ativa o nest_asyncio para permitir loops de eventos aninhados no Jupyter Notebook
+
+nest_asyncio.apply()
+
+
+
+# Funções otimizadas para cálculo dos indicadores
+
+def KVO(high, low, close, volume, short_period=34, long_period=55, signal_period=13):
+
+    trend = np.where(close >= np.roll(close, 1), 1, -1)
+
+    dm = np.abs(high - np.roll(low, 1))
+
+    cm = np.abs(np.roll(close, 1) - (np.roll(high, 1) + np.roll(low, 1)) / 2)
+
+    sv = dm + cm
+
+    kvo = pd.Series(volume * sv * trend).ewm(span=short_period, adjust=False).mean() - \
+
+          pd.Series(volume * sv * trend).ewm(span=long_period, adjust=False).mean()
+
+    signal = kvo.ewm(span=signal_period, adjust=False).mean()
+
+    return kvo, signal
+
+
+
+def RSI(data, period=14):
+
+    delta = data.diff()
+
+    gain = delta.where(delta > 0, 0)
+
+    loss = -delta.where(delta < 0, 0)
+
+    avg_gain = gain.rolling(window=period, min_periods=1).mean()
+
+    avg_loss = loss.rolling(window=period, min_periods=1).mean()
+
+    rs = avg_gain / avg_loss
+
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+
+
+def MACD(data, short_period=12, long_period=26, signal_period=9):
+
+    ema_short = data.ewm(span=short_period, adjust=False).mean()
+
+    ema_long = data.ewm(span=long_period, adjust=False).mean()
+
+    macd_line = ema_short - ema_long
+
+    signal_line = macd_line.ewm(span=signal_period, adjust=False).mean()
+
+    histogram = macd_line - signal_line
+
+    return macd_line, signal_line, histogram
+
+
+
+def BollingerBands(data, period=20, std_dev=2):
+
+    sma = data.rolling(window=period).mean()
+
+    std = data.rolling(window=period).std()
+
+    upper_band = sma + (std_dev * std)
+
+    lower_band = sma - (std_dev * std)
+
+    return upper_band, lower_band
+
+
+
+def apply_mtq(df):
+
+    df['SMA200'] = df['close'].rolling(window=200).mean()
+
+    buy_signal = (df['close'] > df['SMA200']) & (df['KVO'] > df['Signal']) & \
+
+                 (df['MACD_Line'] > df['Signal_Line']) & (df['Histogram'] > 0)
+
+    sell_signal = (df['close'] < df['SMA200']) & (df['KVO'] < df['Signal']) & \
+
+                  (df['MACD_Line'] < df['Signal_Line']) & (df['Histogram'] < 0)
+
+    return buy_signal, sell_signal
+
+
+
+def find_peaks_and_troughs(highs, lows):
+
+    peaks = []
+
+    troughs = []
+
+    for i in range(1, len(highs) - 1):
+
+        if highs.iloc[i] > highs.iloc[i - 1] and highs.iloc[i] > highs.iloc[i + 1]:
+
+            peaks.append((i, highs.iloc[i]))
+
+        if lows.iloc[i] < lows.iloc[i - 1] and lows.iloc[i] < lows.iloc[i + 1]:
+
+            troughs.append((i, lows.iloc[i]))
+
+    return peaks, troughs
+
+
+
+def find_elliott_waves(peaks, troughs):
+
+    waves = []
+
+    if len(peaks) >= 5 and len(troughs) >= 3:
+
+        waves.append(("Wave 1", peaks[0]))
+
+        waves.append(("Wave 2", troughs[0]))
+
+        waves.append(("Wave 3", peaks[1]))
+
+        waves.append(("Wave 4", troughs[1]))
+
+        waves.append(("Wave 5", peaks[2]))
+
+        waves.append(("Wave A", troughs[2]))
+
+        waves.append(("Wave B", peaks[3]))
+
+        waves.append(("Wave C", troughs[3]))
+
+    return waves
+
+
+
+def calculate_fibonacci_retracement(peak, trough):
+
+    fib_levels = [0.382, 0.5, 0.686, 0.786, 0.912]
+
+    retracements = {}
+
+    for level in fib_levels:
+
+        retracement_level = peak - (peak - trough) * level
+
+        retracements[level] = retracement_level
+
+    return retracements
+
+
+
+def analyze_cycles(df):
+
+    if 'close' in df.columns:
+
+        df['SMA10'] = df['close'].rolling(window=10).mean()
+
+        df['SMA30'] = df['close'].rolling(window=30).mean()
+
+        if df['SMA10'].iloc[-1] > df['SMA30'].iloc[-1]:
+
+            return 'Ciclo de Alta'
+
+        elif df['SMA10'].iloc[-1] < df['SMA30'].iloc[-1]:
+
+            return 'Ciclo de Baixa'
+
+    return 'Ciclo Neutro'
+
+
+
+# Função para detectar divergência entre preço e indicador (RSI ou MACD)
+
+def detect_divergence(prices, indicator, peaks, troughs):
+
+    divergence_signals = []
+
+    for i in range(1, len(prices) - 1):
+
+        # Divergência de alta: Preço formando fundos mais baixos, mas indicador formando fundos mais altos
+
+        if prices.iloc[i] < prices.iloc[i - 1] and prices.iloc[i] < prices.iloc[i + 1] and \
+
+           indicator.iloc[i] > indicator.iloc[i - 1] and indicator.iloc[i] > indicator.iloc[i + 1]:
+
+            divergence_signals.append(('Bullish Divergence', i, prices.iloc[i]))
+
+        
+
+        # Divergência de baixa: Preço formando topos mais altos, mas indicador formando topos mais baixos
+
+        elif prices.iloc[i] > prices.iloc[i - 1] and prices.iloc[i] > prices.iloc[i + 1] and \
+
+             indicator.iloc[i] < indicator.iloc[i - 1] and indicator.iloc[i] < indicator.iloc[i + 1]:
+
+            divergence_signals.append(('Bearish Divergence', i, prices.iloc[i]))
+
+    
+
+    return divergence_signals
+
+
+
+
+
+def analyze_divergence(df):
+
+    # Detectar divergências no RSI e MACD
+
+    rsi_divergence = detect_divergence(df['close'], df['RSI'], df['high'], df['low'])
+
+    macd_divergence = detect_divergence(df['close'], df['MACD_Line'], df['high'], df['low'])
+
+    
+
+    if rsi_divergence:
+
+        for div_type, index, price in rsi_divergence:
+
+            print(f"{div_type} detected at index {index} with price {price} in RSI")
+
+    
+
+    if macd_divergence:
+
+        for div_type, index, price in macd_divergence:
+
+            print(f"{div_type} detected at index {index} with price {price} in MACD")
+
+
+
+def analyze_dow_theory(df):
+
+    if 'close' in df.columns:
+
+        df['SMA60'] = df['close'].rolling(window=60).mean()
+
+        df['SMA200'] = df['close'].rolling(window=200).mean()
+
+        if df['SMA60'].iloc[-1] > df['SMA200'].iloc[-1]:
+
+            return 'Tendência de Alta'
+
+        elif df['SMA60'].iloc[-1] < df['SMA200'].iloc[-1]:
+
+            return 'Tendência de Baixa'
+
+    return 'Tendência Neutra'
+
+
+
+
+
+def project_wave_elliott(waves):
+
+    projected_points = 0
+
+    if len(waves) >= 5 and waves[-1][0] == "Wave 5":
+
+        wave_1_high = waves[0][1][1]
+
+        wave_2_low = waves[1][1][1]
+
+        wave_3_high = waves[2][1][1]
+
+        projected_points = wave_3_high - wave_1_high
+
+        print(f"Projeção de alta após Onda 5: {projected_points:.2f} pontos.")
+
+    elif len(waves) >= 8 and waves[-1][0] == "Wave C":
+
+        wave_a_low = waves[5][1][1]
+
+        wave_b_high = waves[6][1][1]
+
+        projected_points = wave_a_low - wave_b_high
+
+        print(f"Projeção de queda após Onda C: {projected_points:.2f} pontos.")
+
+    return projected_points
+
+
+
+def is_near(value, target, threshold=0.01):
+
+    return abs(value - target) / target <= threshold
+
+
+
+def analyze_wdov24(df):
+
+    # Exemplo de função para calcular a tendência WDOV24
+
+    # Substitua com a lógica específica para a análise da tendência WDOV24
+
+    df['WDOZ24_Tend'] = df['close'].rolling(window=200).mean()  # Exemplo simples: média móvel de 50 períodos
+
+    return df
+
+
+
+def analyze_signals(df, buy_signal, sell_signal, peaks, troughs):
+
+    current_candle = df.iloc[-1]
+
+    close_price = current_candle['close']
+
+
+
+
+
+ waves = find_elliott_waves(peaks, troughs)
+
+    for wave in waves:
+
+        print(f"{wave[0]}: {wave[1][1]}")
+
+
+
+    if len(peaks) > 0 and len(troughs) > 0:
+
+        last_peak = peaks[-1][1]
+
+        last_trough = troughs[-1][1]
+
+        retracements = calculate_fibonacci_retracement(last_peak, last_trough)
+
+        print("Níveis de retração de Fibonacci:")
+
+        for level, value in retracements.items():
+
+            print(f"Nível {level*100:.1f}%: {value}")
+
+
+
+# Análise de força da compra
+
+    if len(troughs) > 0:
+
+        last_trough_value = troughs[-1][1]
+
+        if is_near(close_price, last_trough_value, threshold=0.01):
+
+            if buy_signal.iloc[-1]:
+
+                print(f"Sinal de Compra próximo ao fundo detectado: {close_price} próximo de {last_trough_value}")
+
+                projected_points = project_wave_elliott(waves)
+
+                print(f"Expectativa de alta: {projected_points:.2f} pontos.")
+
+                
+
+                # Avaliação da força do sinal de compra
+
+                if close_price < retracements[0.382]:
+
+                    print("Compra Fraca: o preço está próximo do fundo, mas sem força significativa.")
+
+                elif close_price < retracements[0.5]:
+
+                    print("Compra Moderada: o preço está entre 38.2% e 50% da retração de Fibonacci.")
+
+                elif close_price < retracements[0.686]:
+
+                    print("Compra Forte: o preço está entre 50% e 68.6% da retração de Fibonacci.")
+
+                elif close_price < retracements[0.786]:
+
+                    print("Compra Muito Forte: o preço está entre 68.6% e 78.6% da retração de Fibonacci.")
+
+                else:
+
+                    print("Compra Extrema: o preço superou a retração de 78.6%, indicando força máxima de alta.")
+
+
+
+ # Análise de força da venda
+
+    if len(peaks) > 0:
+
+        last_peak_value = peaks[-1][1]
+
+        if is_near(close_price, last_peak_value, threshold=0.01):
+
+            if sell_signal.iloc[-1]:
+
+                print(f"Sinal de Venda próximo ao topo detectado: {close_price} próximo de {last_peak_value}")
+
+                projected_points = project_wave_elliott(waves)
+
+                print(f"Expectativa de queda: {projected_points:.2f} pontos.")
+
+                
+
+                # Avaliação da força do sinal de venda
+
+                if close_price > retracements[0.382]:
+
+                    print("Venda Fraca: o preço está próximo do topo, mas sem força significativa.")
+
+                elif close_price > retracements[0.5]:
+
+                    print("Venda Moderada: o preço está entre 38.2% e 50% da retração de Fibonacci.")
+
+                elif close_price > retracements[0.686]:
+
+                    print("Venda Forte: o preço está entre 50% e 68.6% da retração de Fibonacci.")
+
+                elif close_price > retracements[0.786]:
+
+                    print("Venda Muito Forte: o preço está entre 68.6% e 78.6% da retração de Fibonacci.")
+
+                else:
+
+                    print("Venda Extrema: o preço está abaixo da retração de 78.6%, indicando força máxima de queda.")
+
+    
+
+ if len(peaks) > 0:
+
+        last_peak_value = peaks[-1][1]
+
+        if is_near(close_price, last_peak_value, threshold=0.01):
+
+            if sell_signal.iloc[-1]:
+
+                print(f"Sinal de Venda próximo ao topo detectado: {close_price} próximo de {last_peak_value}")
+
+                projected_points = project_wave_elliott(waves)
+
+                print(f"Expectativa de queda: {projected_points:.2f} pontos.")
+
+
+
+    # Análise cíclica e da teoria de Dow
+
+    cycle_trend = analyze_cycles(df)
+
+    dow_trend = analyze_dow_theory(df)
+
+    print(f"Tendência Cíclica: {cycle_trend}")
+
+    print(f"Tendência da Teoria de Dow: {dow_trend}")
+
+
+
+ # Análise da tendência WDOV24
+
+    df = analyze_wdov24(df)
+
+    wdov24_trend = df['WDOZ24_Tend'].iloc[-1]
+
+    if close_price > wdov24_trend:
+
+        print(f"Tendência WDOV24: Alta")
+
+    else:
+
+        print(f"Tendência WDOV24: Baixa")
+
+
+
+
+
+# Análise cíclica e da teoria de Dow
+
+    cycle_trend = analyze_cycles(df)
+
+    dow_trend = analyze_dow_theory(df)
+
+    print(f"Tendência Cíclica: {cycle_trend}")
+
+    print(f"Tendência da Teoria de Dow: {dow_trend}")
+
+
+
+
+
+async def analyze_minute_timeframe(symbol):
+
+    end_time = datetime.now()
+
+    start_time = end_time - timedelta(days=3)
+
+    rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M1, start_time, end_time)
+
+    if rates is None or len(rates) == 0:
+
+        print("Nenhum dado retornado do MetaTrader 5.")
+
+        return None
+
+
+
+
+
+    df = pd.DataFrame(rates)
+
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+
+    df.set_index('time', inplace=True)
+
+    df['KVO'], df['Signal'] = KVO(df['high'], df['low'], df['close'], df['tick_volume'])
+
+    df['RSI'] = RSI(df['close'])
+
+    df['BB_Upper'], df['BB_Lower'] = BollingerBands(df['close'])
+
+    df['MACD_Line'], df['Signal_Line'], df['Histogram'] = MACD(df['close'])
+
+
+
+    buy_signal, sell_signal = apply_mtq(df)
+
+    peaks, troughs = find_peaks_and_troughs(df['high'], df['low'])
+
+
+
+# Chamar a nova função de análise de divergência
+
+    analyze_divergence(df)
+
+
+
+    analyze_signals(df, buy_signal, sell_signal, peaks, troughs)
+
+    
+
+    return df
+
+
+
+def train_stacked_model(df):
+
+    if df.shape[0] < 100:
+
+        print("Amostra insuficiente para treinar o modelo.")
+
+        return None
+
+
+
+     # Calcula a largura das Bandas de Bollinger
+
+    df['BB_Width'] = df['BB_Upper'] - df['BB_Lower']
+
+
+
+    # Seleção das características, incluindo as Bandas de Bollinger
+
+    features = df[['KVO', 'RSI', 'MACD_Line', 'Signal_Line', 'Histogram', 'close', 'BB_Upper', 'BB_Lower', 'BB_Width']]
+
+
+
+    features = df[['KVO', 'RSI', 'MACD_Line', 'Signal_Line', 'Histogram', 'close']]
+
+    target = (df['close'].shift(-1) > df['close']).astype(int)
+
+
+
+    # Verificar se há valores NaN e tratá-los
+
+    if features.isnull().any().any():
+
+        print("Valores NaN encontrados nos dados. Imputando valores...")
+
+        imputer = SimpleImputer(strategy='mean')
+
+        features = imputer.fit_transform(features)
+
+
+
+X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
+
+
+
+    # Converte arrays em DataFrames para manter os nomes das colunas
+
+    X_train = pd.DataFrame(X_train, columns=['KVO', 'RSI', 'MACD_Line', 'Signal_Line', 'Histogram', 'close'])
+
+    X_test = pd.DataFrame(X_test, columns=['KVO', 'RSI', 'MACD_Line', 'Signal_Line', 'Histogram', 'close'])
+
+
+
+    estimators = [
+
+        ('rf', RandomForestClassifier(n_estimators=100)),
+
+        ('svm', SVC(probability=True)),
+
+        ('xgb', XGBClassifier(eval_metric='logloss'))
+
+    ]
+
+    clf = StackingClassifier(estimators=estimators, final_estimator=LogisticRegression())
+
+    clf.fit(X_train, y_train)
+
+
+
+    y_pred = clf.predict(X_test)
+
+    accuracy = accuracy_score(y_test, y_pred)
+
+    print(f"Acurácia do modelo empilhado: {accuracy:.2f}")
+
+
+
+    return clf
+
+async def main():
+
+    symbol = "WINZ24"  # Substitua com o símbolo desejado
+
+    mt5.initialize()
+
+    try:
+
+        df = await analyze_minute_timeframe(symbol)
+
+        if df is None:
+
+            print("Erro ao obter os dados do gráfico.")
+
+            return
+
+
+
+        stacked_model = train_stacked_model(df)
+
+
+
+        if stacked_model is None:
+
+            print("Modelo empilhado não treinado devido a amostras insuficientes.")
+
+            return
+
+
+
+ while True:
+
+            last_close = await analyze_minute_timeframe(symbol)
+
+            if last_close is not None:
+
+                features = last_close[['KVO', 'RSI', 'MACD_Line', 'Signal_Line', 'Histogram', 'close']].tail(1)
+
+
+
+                # Converte o último conjunto de características para DataFrame
+
+                features = pd.DataFrame(features, columns=['KVO', 'RSI', 'MACD_Line', 'Signal_Line', 'Histogram', 'close'])
+
+                prediction = stacked_model.predict(features)[0]
+
+
+
+                if prediction == 1:
+
+                    print("Sinal de Compra Detectado")
+
+                elif prediction == 0:
+
+                    print("Sinal de Venda Detectado") 
+
+                else:
+
+                    print("Sem sinal claro")
+
+
+
+# Linha de 50 hífens após exibir os dados
+
+                print("-" * 50)
+
+
+
+            # Espera até o próximo candle
+
+            current_time = datetime.now()
+
+            next_candle_time = (current_time + timedelta(minutes=1)).replace(second=0, microsecond=0)
+
+            wait_time = (next_candle_time - current_time).total_seconds()
+
+            await asyncio.sleep(wait_time)
+
+    finally:
+
+        mt5.shutdown()
+
+
+
+# Executa o código principal
+
+await main()
+
+
